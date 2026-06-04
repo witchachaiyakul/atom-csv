@@ -13,7 +13,7 @@ const storage = new Storage();
 const ALLOWED_STORES = ['Atom', 'Atom_Beach', 'Good_Time', 'Paradise', 'Tiger_King_Bar_&_Bistro'];
 
 /**
- * 🧼 ฟังก์ชันล้างค่าและจัดการชื่อร้านให้ตรงกับมาตรฐานฐานข้อมูล (ดึงมาจากโค้ดเดิมของพี่เป๊ะๆ)
+ * 🧼 ฟังก์ชันล้างค่าและจัดการชื่อร้านให้ตรงกับมาตรฐานฐานข้อมูล
  */
 function getUnifiedShopName(rawShop) {
   if (!rawShop) return "Unknown";
@@ -50,24 +50,35 @@ app.post('/', async (req, res) => {
   try {
     const file = storage.bucket(bucket).file(name);
     
-    // 🔍 1. แตก Path เพื่อหาประเภทรายงาน และ ชื่อร้านค้าต้นทางจากโฟลเดอร์บน Storage
-    // โครงสร้าง: ocha/raw_reports/Payment/Atom/2026/06/Atom_Payment_2026-06-02.csv
-    const pathParts = name.split('/');
-    const reportType = pathParts[2] || 'Payment'; // Payment, Discounts, BestSeller
-    const rawStore = pathParts[3] || 'Unknown';
+    // 🔍 1. ใช้ RegEx ดักจับประเภทรายงานและชื่อร้านค้าแบบเจาะจง (ปลอดภัยกว่าการนับ Index ของสแลช)
+    const reportTypeMatch = name.match(/(Payment|Discounts|BestSeller)/i);
+    let reportType = reportTypeMatch ? reportTypeMatch[1] : 'Payment';
     
-    // นำชื่อร้านดิบที่แกะจาก Path ไปผ่านตัวกรอง Unified ให้เป็นชื่อมาตรฐานของพี่
-    const standardStore = getUnifiedShopName(rawStore);
-    
-    // กำหนดชื่อคอลเลกชันหลักปลายทางให้ล้อตามประเภทรายงาน
+    if (reportType.toLowerCase() === 'payment') reportType = 'Payment';
+    if (reportType.toLowerCase() === 'discounts') reportType = 'Discounts';
+    if (reportType.toLowerCase() === 'bestseller') reportType = 'BestSeller';
+
     let collectionName = 'income'; 
     if (reportType === 'Discounts') collectionName = 'discounts';
     if (reportType === 'BestSeller') collectionName = 'bestseller';
 
+    const storeMatch = name.match(new RegExp(`${reportType}/([^/]+)`, 'i'));
+    const rawStore = storeMatch ? storeMatch[1] : 'Unknown';
+    
+    const standardStore = getUnifiedShopName(rawStore);
+
+    console.log(`📌 แกะค่าได้ -> รายงาน: ${collectionName} (${reportType}) | ร้านค้ามาตรฐาน: ${standardStore}`);
+
+    if (!standardStore || standardStore === 'Unknown' || standardStore.trim() === '') {
+      console.log(`❌ [ABORT] ปฏิเสธการบันทึกเนื่องจากชื่อร้านค้าไม่ถูกต้อง: "${rawStore}"`);
+      return res.status(400).send('Invalid shop name extracted');
+    }
+
     // 🔍 2. ดึงเฉพาะชื่อไฟล์ตัวท้ายสุด เพื่อแกะวันที่ (รูปแบบ YYYY-MM-DD)
-    const fileName = pathParts[pathParts.length - 1];
+    // แก้ไขใช้ .split('/').pop() เรียบร้อยแล้ว ชัวร์แน่นอนครับ
+    const fileName = name.split('/').pop(); 
     const dateMatch = fileName.match(/\d{4}-\d{2}-\d{2}/); 
-    const docDateId = dateMatch ? dateMatch[0] : null; // ได้ค่าเป็น '2026-06-02'
+    const docDateId = dateMatch ? dateMatch[0] : null; 
 
     if (!docDateId) {
       console.log(`⚠️ ไม่พบรูปแบบวันที่ในชื่อไฟล์: ${fileName}`);
@@ -83,19 +94,18 @@ app.post('/', async (req, res) => {
     }
 
     // 🔍 4. 🎯 ยิงข้อมูลลงพิกัดโครงสร้างแบบเจาะจงห้องของพี่วิชชา
-    // พิกัด: คอลเลกชันหลัก -> ชื่อร้านมาตรฐาน -> daily_records -> เอกสารชื่อวันที่
     await firestore
       .collection(collectionName)
       .doc(standardStore)
       .collection('daily_records')
       .doc(docDateId)
       .set({
-        records: allRows,         // อัดทุกบรรทัดใน CSV ลงที่นี่เป็นอาเรย์ชิ้นใหญ่
+        records: allRows,         
         total_rows: allRows.length,
-        store: standardStore,     // บันทึกระบุหัวไว้ด้านในอีกชั้นเพื่อความชัวร์
+        store: standardStore,     
         report_type: reportType,
         importedAt: new Date()
-      }, { merge: true });        // ใช้ merge เผื่อมีการอัปเดตไฟล์เดิม ข้อมูลอื่นจะไม่พังครับ
+      }, { merge: true });        
 
     console.log(`✅ [SUCCESS] บันทึกข้อมูลร้าน ${standardStore} ของวันที่ ${docDateId} ลงใน ${collectionName}/.../daily_records เรียบร้อยแล้ว! (จำนวน ${allRows.length} แถว)`);
     res.status(200).send('Processed!');
