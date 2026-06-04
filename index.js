@@ -9,28 +9,6 @@ app.use(express.json());
 const firestore = new Firestore();
 const storage = new Storage();
 
-// 🎯 มาตรฐานชื่อร้าน 5 ร้านหลัก (ใช้รูปแบบดั้งเดิมของพี่วิชชาที่มีเว้นวรรค)
-const ALLOWED_STORES = ["Atom", "Atom Beach", "Good Time", "Paradise", "Tiger King Bar & Bistro"];
-
-/**
- * 🧼 ฟังก์ชันแกะและล้างค่าชื่อร้านจากชื่อไฟล์โดยตรง (ลอกลอจิกจาก Apps Script ของพี่มาเป๊ะๆ)
- */
-function getUnifiedShopNameFromFilename(filename) {
-  const base = (filename || "").replace(/\.csv$/i, "");
-  const firstToken = base.split(" - ")[0].trim();
-  const t = firstToken.toLowerCase();
-  
-  const map = {
-    "atom": "Atom",
-    "atom beach": "Atom Beach",
-    "good time": "Good Time",
-    "paradise": "Paradise",
-    "tiger king bar & bistro": "Tiger King Bar & Bistro",
-  };
-  
-  return map[t] || null;
-}
-
 app.post('/', async (req, res) => {
   const { bucket, name } = req.body;
   console.log(`🚀 กำลังประมวลผลไฟล์: ${name}`);
@@ -42,42 +20,30 @@ app.post('/', async (req, res) => {
   try {
     const file = storage.bucket(bucket).file(name);
     
-    // 🔍 1. ใช้ RegEx ดักจับประเภทรายงานแบบเจาะจง
-    const reportTypeMatch = name.match(/(Payment|Discounts|BestSeller)/i);
-    let reportType = reportTypeMatch ? reportTypeMatch[1] : 'Payment';
-    
-    if (reportType.toLowerCase() === 'payment') reportType = 'Payment';
-    if (reportType.toLowerCase() === 'discounts') reportType = 'Discounts';
-    if (reportType.toLowerCase() === 'bestseller') reportType = 'BestSeller';
+    // 🔍 1 & 2. ดึงชื่อไฟล์ตัวท้ายสุด และสับคำด้วย "_" ทันที (ตรรกะความเร็วสูงล้อตาม Apps Script ใหม่)
+    // ตัวอย่าง: "Tiger_King_Bar_&_Bistro_BestSeller_2026-06-02.csv"
+    const fileName = name.split('/').pop(); 
+    const cleanFileName = fileName.replace('.csv', '');
+    const parts = cleanFileName.split('_'); // สับแยกองค์ประกอบด้วยขีดล่าง
 
+    if (parts.length < 3) {
+      console.log(`❌ [ABORT] ชื่อไฟล์ไม่ตรงตามโครงสร้างมาตรฐาน: "${fileName}"`);
+      return res.status(400).send('Invalid file name structure');
+    }
+
+    // 🎯 ดึงองค์ประกอบจากท้ายย้อนกลับมาหน้า
+    const docDateId = parts.pop();   // ตัวท้ายสุด = วันที่ ("2026-06-02")
+    const reportType = parts.pop();  // ตัวรองสุดท้าย = ประเภทรายงาน ("BestSeller", "Payment", "Discounts")
+    const standardStore = parts.join(' '); // ตัวที่เหลือข้างหน้าทั้งหมด นำมาต่อกันด้วยช่องว่างตามเดิมเป๊ะๆ
+
+    // ตั้งชื่อคอลเลกชันหลักปลายทางให้ล้อตามประเภทรายงาน
     let collectionName = 'income'; 
     if (reportType === 'Discounts') collectionName = 'discounts';
     if (reportType === 'BestSeller') collectionName = 'bestseller';
 
-    // 🔍 2. ดึงเฉพาะชื่อไฟล์ตัวท้ายสุด เพื่อเอาไปดักจับชื่อร้าน และ แกะวันที่
-    const fileName = name.split('/').pop(); 
-    
-    // ดึงชื่อร้านค้ามาตรฐาน 5 ร้านหลักผ่านฟังก์ชันของพี่วิชชา
-    const standardStore = getUnifiedShopNameFromFilename(fileName);
-    
-    // แกะวันที่ (รูปแบบ YYYY-MM-DD)
-    const dateMatch = fileName.match(/\d{4}-\d{2}-\d{2}/); 
-    const docDateId = dateMatch ? dateMatch[0] : null; 
+    console.log(`📌 [ระบบตรวจจับคำชัดเจน] รายงาน: ${collectionName} (${reportType}) | ร้านค้ามาตรฐาน: "${standardStore}" | วันที่: ${docDateId}`);
 
-    console.log(`📌 แกะค่าได้ -> รายงาน: ${collectionName} (${reportType}) | ร้านค้ามาตรฐาน: ${standardStore} | วันที่: ${docDateId}`);
-
-    // ดักจับกรณีข้อมูลชื่อร้านหรือวันที่หลุดคิวรี
-    if (!standardStore) {
-      console.log(`❌ [ABORT] ข้ามไฟล์เนื่องจากไม่พบชื่อร้านค้ามาตรฐานจากชื่อไฟล์: "${fileName}"`);
-      return res.status(400).send('Store not recognized');
-    }
-
-    if (!docDateId) {
-      console.log(`⚠️ [ABORT] ข้ามไฟล์เนื่องจากไม่พบรูปแบบวันที่ในชื่อไฟล์: "${fileName}"`);
-      return res.status(400).send('Invalid file name format (Missing Date)');
-    }
-
-    // 🔍 3. สับไฟล์ CSV เป็นตารางข้อมูลดิบ (ปิด columns: true เพื่อความเสถียรสูงสุดของตาราง)
+    // 🔍 3. สับไฟล์ CSV เป็นตารางข้อมูลดิบ (ปิด columns: true เพื่อความเสถียรสูงสุด)
     const parser = file.createReadStream().pipe(csv.parse({ columns: false, skip_empty_lines: true }));
     const tbl = [];
     for await (const row of parser) {
@@ -91,7 +57,7 @@ app.post('/', async (req, res) => {
 
     let processedRecords = [];
 
-    // Helper functions สำหรับแปลงตัวเลข (ล้อสเปคจาก Apps Script เดิม)
+    // Helper functions สำหรับแปลงตัวเลข (คงเดิมเพื่อความแม่นยำ)
     const toMoney = (s) => {
       if (s == null) return 0;
       const raw = s.toString();
@@ -277,8 +243,7 @@ app.post('/', async (req, res) => {
       }
     }
 
-    // 🔍 4. 🎯 สับข้อมูลลงพิกัดห้องของพี่วิชชาใน Firestore แบบดั้งเดิม
-    // ตัวอย่าง Path: income/Atom Beach/daily_records/2026-06-02
+    // 🔍 4. 🎯 ยิงข้อมูลลงพิกัดห้องตรงตัวใน Firestore
     await firestore
       .collection(collectionName)
       .doc(standardStore)
