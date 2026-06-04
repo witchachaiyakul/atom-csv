@@ -20,11 +20,11 @@ app.post('/', async (req, res) => {
   try {
     const file = storage.bucket(bucket).file(name);
     
-    // 🔍 1 & 2. ดึงชื่อไฟล์ตัวท้ายสุด และสับคำด้วย "_" ทันที (ตรรกะความเร็วสูงล้อตาม Apps Script ใหม่)
-    // ตัวอย่าง: "Tiger_King_Bar_&_Bistro_BestSeller_2026-06-02.csv"
+    // 🔍 1 & 2. ดึงชื่อไฟล์ตัวท้ายสุด และสับคำด้วย "_" ทันที
+    // ตัวอย่างไฟล์ใหม่: "Tiger_King_Bar_&_Bistro_BestSeller_2026-06-02.csv"
     const fileName = name.split('/').pop(); 
     const cleanFileName = fileName.replace('.csv', '');
-    const parts = cleanFileName.split('_'); // สับแยกองค์ประกอบด้วยขีดล่าง
+    const parts = cleanFileName.split('_'); 
 
     if (parts.length < 3) {
       console.log(`❌ [ABORT] ชื่อไฟล์ไม่ตรงตามโครงสร้างมาตรฐาน: "${fileName}"`);
@@ -34,14 +34,17 @@ app.post('/', async (req, res) => {
     // 🎯 ดึงองค์ประกอบจากท้ายย้อนกลับมาหน้า
     const docDateId = parts.pop();   // ตัวท้ายสุด = วันที่ ("2026-06-02")
     const reportType = parts.pop();  // ตัวรองสุดท้าย = ประเภทรายงาน ("BestSeller", "Payment", "Discounts")
-    const standardStore = parts.join(' '); // ตัวที่เหลือข้างหน้าทั้งหมด นำมาต่อกันด้วยช่องว่างตามเดิมเป๊ะๆ
+    
+    // 🎯 [แก้ไขจุดสำคัญ]: เชื่อมคำที่เหลือข้างหน้ากลับมาด้วย ขีดล่าง "_" เพื่อให้ตรงตามฐานข้อมูลเดิมของพี่
+    // ผลลัพธ์ที่ได้จะเป็น: "Atom_Beach", "Good_Time", "Tiger_King_Bar_&_Bistro"
+    const standardStore = parts.join('_'); 
 
     // ตั้งชื่อคอลเลกชันหลักปลายทางให้ล้อตามประเภทรายงาน
     let collectionName = 'income'; 
     if (reportType === 'Discounts') collectionName = 'discounts';
     if (reportType === 'BestSeller') collectionName = 'bestseller';
 
-    console.log(`📌 [ระบบตรวจจับคำชัดเจน] รายงาน: ${collectionName} (${reportType}) | ร้านค้ามาตรฐาน: "${standardStore}" | วันที่: ${docDateId}`);
+    console.log(`📌 [ระบบขีดล่างมาตรฐาน] รายงาน: ${collectionName} (${reportType}) | เอกสารชื่อร้านค้า: "${standardStore}" | วันที่: ${docDateId}`);
 
     // 🔍 3. สับไฟล์ CSV เป็นตารางข้อมูลดิบ (ปิด columns: true เพื่อความเสถียรสูงสุด)
     const parser = file.createReadStream().pipe(csv.parse({ columns: false, skip_empty_lines: true }));
@@ -108,7 +111,7 @@ app.post('/', async (req, res) => {
         return null;
       };
 
-      const isThaiCashStrict = /^(Atom|Good Time)$/i.test(standardStore) || /(ATOM|Good Time)\s*-\s*ช่องทางการชำระเงิน/i.test(fileName);
+      const isThaiCashStrict = /^(Atom|Good_Time)$/i.test(standardStore) || /(ATOM|Good_Time)\s*-\s*ช่องทางการชำระเงิน/i.test(fileName);
 
       for (let r = 0; r < tbl.length; r++) {
         const row = tbl[r];
@@ -243,7 +246,8 @@ app.post('/', async (req, res) => {
       }
     }
 
-    // 🔍 4. 🎯 ยิงข้อมูลลงพิกัดห้องตรงตัวใน Firestore
+    // 🔍 4. 🎯 ยิงข้อมูลลงพิกัดห้องเวอร์ชันขีดล่างสากลใน Firestore
+    // ตัวอย่าง Path: income/Atom_Beach/daily_records/2026-06-02
     await firestore
       .collection(collectionName)
       .doc(standardStore)
@@ -258,7 +262,7 @@ app.post('/', async (req, res) => {
         importedAt: new Date()
       }, { merge: true });        
 
-    console.log(`✅ [SUCCESS] บันทึกข้อมูลร้าน "${standardStore}" วันที่ ${docDateId} ลงใน ${collectionName}/.../daily_records เรียบร้อยแล้ว!`);
+    console.log(`✅ [SUCCESS] บันทึกข้อมูลเข้าห้องมาตรฐาน "${standardStore}" เรียบร้อยแล้ว!`);
     res.status(200).send('Processed!');
 
   } catch (error) {
