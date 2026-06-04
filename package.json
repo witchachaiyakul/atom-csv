@@ -1,0 +1,15 @@
+{
+  "name": "atom-csv",
+  "version": "1.0.0",
+  "description": "CSV parser for Atom Group",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "express": "^4.21.0",
+    "@google-cloud/storage": "^7.14.0",
+    "@google-cloud/firestore": "^7.9.0",
+    "csv-parse": "^5.5.6"
+  }
+}
