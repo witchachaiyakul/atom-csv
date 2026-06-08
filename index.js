@@ -20,8 +20,6 @@ app.post('/', async (req, res) => {
   try {
     const file = storage.bucket(bucket).file(name);
     
-    // 🔍 1 & 2. ดึงชื่อไฟล์ตัวท้ายสุด และสับคำด้วย "_" ทันที
-    // ตัวอย่างไฟล์ใหม่: "Tiger_King_Bar_&_Bistro_BestSeller_2026-06-02.csv"
     const fileName = name.split('/').pop(); 
     const cleanFileName = fileName.replace('.csv', '');
     const parts = cleanFileName.split('_'); 
@@ -31,22 +29,28 @@ app.post('/', async (req, res) => {
       return res.status(400).send('Invalid file name structure');
     }
 
-    // 🎯 ดึงองค์ประกอบจากท้ายย้อนกลับมาหน้า
-    const docDateId = parts.pop();   // ตัวท้ายสุด = วันที่ ("2026-06-02")
-    const reportType = parts.pop();  // ตัวรองสุดท้าย = ประเภทรายงาน ("BestSeller", "Payment", "Discounts")
-    
-    // 🎯 [แก้ไขจุดสำคัญ]: เชื่อมคำที่เหลือข้างหน้ากลับมาด้วย ขีดล่าง "_" เพื่อให้ตรงตามฐานข้อมูลเดิมของพี่
-    // ผลลัพธ์ที่ได้จะเป็น: "Atom_Beach", "Good_Time", "Tiger_King_Bar_&_Bistro"
-    const standardStore = parts.join('_'); 
+    // 🎯 [ปรับปรุงระบบแกะชื่อไฟล์]: แยกเคสพิเศษสำหรับชื่อรายงานยาวที่มีขีดล่าง เพื่อความปลอดภัย 100%
+    let reportType = "";
+    let standardStore = "";
+    const docDateId = parts.pop();   // ตัวท้ายสุด = วันที่ ("2026-02-03")
+
+    if (cleanFileName.includes('_sales_by_user_')) {
+      reportType = 'sales_by_user';
+      standardStore = cleanFileName.split('_sales_by_user_')[0]; // ดึงทุกคำข้างหน้าขีดล่างกลับมาทั้งหมด
+    } else {
+      reportType = parts.pop();  // "BestSeller", "Payment", "Discounts"
+      standardStore = parts.join('_');
+    }
 
     // ตั้งชื่อคอลเลกชันหลักปลายทางให้ล้อตามประเภทรายงาน
     let collectionName = 'income'; 
     if (reportType === 'Discounts') collectionName = 'discounts';
     if (reportType === 'BestSeller') collectionName = 'bestseller';
+    if (reportType === 'sales_by_user') collectionName = 'sales_by_user'; // 🌟 เพิ่มพิกัดตระกูลโฟลเดอร์ใหม่
 
     console.log(`📌 [ระบบขีดล่างมาตรฐาน] รายงาน: ${collectionName} (${reportType}) | เอกสารชื่อร้านค้า: "${standardStore}" | วันที่: ${docDateId}`);
 
-    // 🔍 3. สับไฟล์ CSV เป็นตารางข้อมูลดิบ (ปิด columns: true เพื่อความเสถียรสูงสุด)
+    // 🔍 สับไฟล์ CSV เป็นตารางข้อมูลดิบ
     const parser = file.createReadStream().pipe(csv.parse({ columns: false, skip_empty_lines: true }));
     const tbl = [];
     for await (const row of parser) {
@@ -246,8 +250,76 @@ app.post('/', async (req, res) => {
       }
     }
 
-    // 🔍 4. 🎯 ยิงข้อมูลลงพิกัดห้องเวอร์ชันขีดล่างสากลใน Firestore
-    // ตัวอย่าง Path: income/Atom_Beach/daily_records/2026-06-02
+    // ==========================================
+    // 🌟 CASE D: ประมวลผลรายงาน SALES BY USER (เพิ่มใหม่)
+    // ==========================================
+    else if (reportType === 'sales_by_user') {
+      let currentUser = "Unknown";
+      let currentOrder = null;
+
+      for (let r = 0; r < tbl.length; r++) {
+        const row = tbl[r];
+        if (!row || row.length < 6) continue;
+
+        // 1. ดักจับและจดจำชื่อพนักงานประจำรอบล็อกอิน
+        if (row[1] === 'User' || row[1] === 'พนักงาน') {
+          currentUser = row[2] || "Unknown";
+          continue;
+        }
+
+        // ข้ามแถวหัวตารางดิบ
+        if (row[1] === 'No.' || row[1] === 'หมายเลขอ้างอิง' || row[1] === 'Sales / Reference Number') {
+          continue;
+        }
+
+        const noVal = row[1];
+        
+        // 2. หากพบค่า No. ในแถว แสดงว่าจุดนี้คือบิลใบใหม่ (เริ่มต้นชุดหลัก)
+        if (noVal && noVal !== "") {
+          if (currentOrder) {
+            processedRecords.push(currentOrder); // ดันบิลใบเก่าที่สะสมเสร็จแล้วเข้าชุดสรุปผล
+          }
+
+          const rawTimestamp = row[3] || "";
+          let orderHour = null;
+          const hourMatch = rawTimestamp.match(/(\d{2}):\d{2}:\d{2}/);
+          if (hourMatch) {
+            orderHour = parseInt(hourMatch[1], 10); // ตัดดึงข้อมูลชั่วโมง (0-23) ออกมาทำกลุ่มวิเคราะห์ช่วงเวลา
+          }
+
+          currentOrder = {
+            no: toInt(noVal),
+            reference_number: row[2] || "",
+            timestamp: rawTimestamp,
+            hour: orderHour, 
+            type: row[4] || "",
+            subtotal: toMoney(row[9]), // ดักจับจำนวนเงินรวมสุทธิของบิลใบนั้น
+            user_staff: currentUser,
+            items: []
+          };
+        }
+
+        // 3. สะสมรายการสินค้า (Sub-items) ที่ขี่อยู่ข้างใต้บิลใบปัจจุบัน
+        if (currentOrder) {
+          const itemName = row[5];
+          if (itemName && itemName !== "") {
+            currentOrder.items.push({
+              item_name: itemName,
+              item_price: toMoney(row[6]),
+              quantity: toInt(row[7]),
+              sales: toMoney(row[8]) // ถอดราคาส่วนลดที่ติดลบลงอาร์เรย์ได้อย่างถูกต้อง
+            });
+          }
+        }
+      }
+
+      // เก็บตกบิลใบสุดท้ายเมื่อลูปประมวลผลจนถึงแถวสุดท้ายของไฟล์
+      if (currentOrder) {
+        processedRecords.push(currentOrder);
+      }
+    }
+
+    // 🔍 4. ยิงข้อมูลลงพิกัดห้องเวอร์ชันขีดล่างสากลใน Firestore
     await firestore
       .collection(collectionName)
       .doc(standardStore)
