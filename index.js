@@ -29,28 +29,25 @@ app.post('/', async (req, res) => {
       return res.status(400).send('Invalid file name structure');
     }
 
-    // 🎯 [ปรับปรุงระบบแกะชื่อไฟล์]: แยกเคสพิเศษสำหรับชื่อรายงานยาวที่มีขีดล่าง เพื่อความปลอดภัย 100%
     let reportType = "";
     let standardStore = "";
-    const docDateId = parts.pop();   // ตัวท้ายสุด = วันที่ ("2026-02-03")
+    const docDateId = parts.pop();   
 
     if (cleanFileName.includes('_sales_by_user_')) {
       reportType = 'sales_by_user';
-      standardStore = cleanFileName.split('_sales_by_user_')[0]; // ดึงทุกคำข้างหน้าขีดล่างกลับมาทั้งหมด
+      standardStore = cleanFileName.split('_sales_by_user_')[0]; 
     } else {
-      reportType = parts.pop();  // "BestSeller", "Payment", "Discounts"
+      reportType = parts.pop();  
       standardStore = parts.join('_');
     }
 
-    // ตั้งชื่อคอลเลกชันหลักปลายทางให้ล้อตามประเภทรายงาน
     let collectionName = 'income'; 
     if (reportType === 'Discounts') collectionName = 'discounts';
     if (reportType === 'BestSeller') collectionName = 'bestseller';
-    if (reportType === 'sales_by_user') collectionName = 'sales_by_user'; // 🌟 เพิ่มพิกัดตระกูลโฟลเดอร์ใหม่
+    if (reportType === 'sales_by_user') collectionName = 'sales_by_user'; 
 
-    console.log(`📌 [ระบบขีดล่างมาตรฐาน] รายงาน: ${collectionName} (${reportType}) | เอกสารชื่อร้านค้า: "${standardStore}" | วันที่: ${docDateId}`);
+    console.log(`📌 [ระบบมาตรฐาน] รายงาน: ${collectionName} (${reportType}) | ร้านค้า: "${standardStore}" | วันที่: ${docDateId}`);
 
-    // 🔍 สับไฟล์ CSV เป็นตารางข้อมูลดิบ
     const parser = file.createReadStream().pipe(csv.parse({ columns: false, skip_empty_lines: true }));
     const tbl = [];
     for await (const row of parser) {
@@ -64,7 +61,6 @@ app.post('/', async (req, res) => {
 
     let processedRecords = [];
 
-    // Helper functions สำหรับแปลงตัวเลข (คงเดิมเพื่อความแม่นยำ)
     const toMoney = (s) => {
       if (s == null) return 0;
       const raw = s.toString();
@@ -92,7 +88,7 @@ app.post('/', async (req, res) => {
     };
 
     // ==========================================
-    // 🛠️ CASE A: ประมวลผลรายงาน PAYMENT CHANNEL
+    // 🛠️ CASE A: PAYMENT CHANNEL (คงเดิม)
     // ==========================================
     if (reportType === 'Payment') {
       const summary = {
@@ -163,7 +159,7 @@ app.post('/', async (req, res) => {
     }
 
     // ==========================================
-    // 🛠️ CASE B: ประมวลผลรายงาน BEST SELLER
+    // 🛠️ CASE B: BEST SELLER (คงเดิม)
     // ==========================================
     else if (reportType === 'BestSeller') {
       const isHeader = (r) => {
@@ -207,7 +203,7 @@ app.post('/', async (req, res) => {
     }
 
     // ==========================================
-    // 🛠️ CASE C: ประมวลผลรายงาน DISCOUNTS APPLIED
+    // 🛠️ CASE C: DISCOUNTS APPLIED (คงเดิม)
     // ==========================================
     else if (reportType === 'Discounts') {
       const joinRow = (r) => (r || []).join(" ").toLowerCase();
@@ -251,7 +247,7 @@ app.post('/', async (req, res) => {
     }
 
     // ==========================================
-    // 🌟 CASE D: ประมวลผลรายงาน SALES BY USER (เพิ่มใหม่)
+    // 🌟 CASE D: SALES BY USER (ลอจิกเปิด-ปิดบิลอัจฉริยะ)
     // ==========================================
     else if (reportType === 'sales_by_user') {
       let currentUser = "Unknown";
@@ -259,67 +255,84 @@ app.post('/', async (req, res) => {
 
       for (let r = 0; r < tbl.length; r++) {
         const row = tbl[r];
-        if (!row || row.length < 6) continue;
+        if (!row || row.length < 10) continue;
 
-        // 1. ดักจับและจดจำชื่อพนักงานประจำรอบล็อกอิน
+        // ดักจับชื่อพนักงานประจำกะเก็บไว้เผื่อใช้อ้างอิง
         if (row[1] === 'User' || row[1] === 'พนักงาน') {
           currentUser = row[2] || "Unknown";
           continue;
         }
 
-        // ข้ามแถวหัวตารางดิบ
-        if (row[1] === 'No.' || row[1] === 'หมายเลขอ้างอิง' || row[1] === 'Sales / Reference Number') {
-          continue;
-        }
+        const colB = row[1] ? row[1].trim() : "";
+        const colF = row[5] ? row[5].trim() : "";
 
-        const noVal = row[1];
-        
-        // 2. หากพบค่า No. ในแถว แสดงว่าจุดนี้คือบิลใบใหม่ (เริ่มต้นชุดหลัก)
-        if (noVal && noVal !== "") {
+        // 🎯 เงื่อนไขที่ 1: ถ้าคอลัมน์ B เป็นตัวเลข = มีการเปิดบิลใหม่แน่นอน (นับเป็นบิลที่ 1, 2, 3...)
+        if (/^\d+$/.test(colB)) {
           if (currentOrder) {
-            processedRecords.push(currentOrder); // ดันบิลใบเก่าที่สะสมเสร็จแล้วเข้าชุดสรุปผล
+            processedRecords.push(currentOrder); // ปิดยอดบิลใบก่อนหน้าลงอาร์เรย์สรุปผล
           }
 
           const rawTimestamp = row[3] || "";
           let orderHour = null;
           const hourMatch = rawTimestamp.match(/(\d{2}):\d{2}:\d{2}/);
           if (hourMatch) {
-            orderHour = parseInt(hourMatch[1], 10); // ตัดดึงข้อมูลชั่วโมง (0-23) ออกมาทำกลุ่มวิเคราะห์ช่วงเวลา
+            orderHour = parseInt(hourMatch[1], 10); // แยกเฉพาะชั่วโมงออกมารอทำกราฟ Time Slot
           }
 
           currentOrder = {
-            no: toInt(noVal),
-            reference_number: row[2] || "",
-            timestamp: rawTimestamp,
-            hour: orderHour, 
-            type: row[4] || "",
-            subtotal: toMoney(row[9]), // ดักจับจำนวนเงินรวมสุทธิของบิลใบนั้น
+            no: parseInt(colB, 10),               // B: No.
+            reference_number: row[2] || "",       // C: หมายเลขอ้างอิง
+            timestamp: rawTimestamp,              // D: เวลา
+            hour: orderHour,
+            type: row[4] || "",                   // E: ประเภทลูกค้า
+            subtotal: toMoney(row[9]),            // J: จำนวนรวมสุทธิประจำบิล
             user_staff: currentUser,
             items: []
           };
-        }
 
-        // 3. สะสมรายการสินค้า (Sub-items) ที่ขี่อยู่ข้างใต้บิลใบปัจจุบัน
-        if (currentOrder) {
-          const itemName = row[5];
-          if (itemName && itemName !== "") {
+          // เพิ่มสินค้าตัวแรกที่มาแถวเดียวกับเลขบิลทันที (หากช่อง F มีชื่อสินค้าอยู่)
+          if (colF !== "") {
             currentOrder.items.push({
-              item_name: itemName,
-              item_price: toMoney(row[6]),
-              quantity: toInt(row[7]),
-              sales: toMoney(row[8]) // ถอดราคาส่วนลดที่ติดลบลงอาร์เรย์ได้อย่างถูกต้อง
+              item_name: colF,                    // F: ชื่อสินค้า
+              item_price: toMoney(row[6]),        // G: ราคาสินค้า
+              quantity: toInt(row[7]),            // H: จำนวน
+              sales: toMoney(row[8])              // I: ยอดขายของเมนูชิ้นนั้น
             });
+          }
+        } 
+        // 🎯 เงื่อนไขที่ 2: ถ้าคอลัมน์ B เป็นค่าว่าง และมีบิลเปิดค้างไว้ก่อนหน้านี้
+        else if (colB === "" && currentOrder) {
+          // หากช่อง F (ชื่อสินค้า) มีข้อมูล = เป็นแถวรายการสินค้าตัวถัดไปของบิลเดิม ให้ทำการสะสมลงอาเรย์ต่อ
+          if (colF !== "") {
+            currentOrder.items.push({
+              item_name: colF,                    // F: ชื่อสินค้า
+              item_price: toMoney(row[6]),        // G: ราคาสินค้า
+              quantity: toInt(row[7]),            // H: จำนวน
+              sales: toMoney(row[8])              // I: ยอดขาย
+            });
+          } 
+          // 🚨 หากช่อง F ก็ว่างด้วย หรือเจอแถวว่างเปล่าคั่นหน้าตาตาราง = สิ้นสุดรายการของบิลนี้แล้ว ให้ปิดบิลทันที
+          else {
+            processedRecords.push(currentOrder);
+            currentOrder = null;
+          }
+        }
+        // 🎯 เงื่อนไขที่ 3: ถ้าช่อง B เป็นข้อความขยะอื่นๆ (เช่น แถวสรุปยอดรวม หรือข้อความ Metadata ระบบ) ให้ทำการปิดบิลค้างทันที
+        else {
+          if (currentOrder) {
+            processedRecords.push(currentOrder);
+            currentOrder = null;
           }
         }
       }
 
-      // เก็บตกบิลใบสุดท้ายเมื่อลูปประมวลผลจนถึงแถวสุดท้ายของไฟล์
+      // เก็บตกบิลใบสุดท้ายเมื่อประมวลผลลูปจนถึงแถวสุดท้ายของไฟล์
       if (currentOrder) {
         processedRecords.push(currentOrder);
       }
     }
 
-    // 🔍 4. ยิงข้อมูลลงพิกัดห้องเวอร์ชันขีดล่างสากลใน Firestore
+    // 🔍 5. ยิงข้อมูลลงพิกัดห้องเวอร์ชันขีดล่างสากลใน Firestore
     await firestore
       .collection(collectionName)
       .doc(standardStore)
